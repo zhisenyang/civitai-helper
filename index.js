@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         civitai helper
-// @namespace    http://tampermonkey.net/
+// @namespace    https://github.com/zhisenyang/civitai-helper
 // @version      2025-06-25
 // @description  civitai helper
 // @author       Johnsen Young
