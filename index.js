@@ -1,10 +1,11 @@
 // ==UserScript==
 // @name         civitai helper
 // @namespace    https://github.com/zhisenyang/civitai-helper
-// @version      2025-06-25
-// @description  civitai helper
+// @version      0.0.1
+// @description  当前版本只有快捷下载功能，会有些 bug，后续将更新更多功能。
 // @author       Johnsen Young
 // @match        https://civitai.com/*
+// @license      MIT
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=civitai.com
 // @grant        GM_download
 // @grant        GM_setValue
