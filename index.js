@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         civitai helper
 // @namespace    https://github.com/zhisenyang/civitai-helper
-// @version      0.0.1
+// @version      0.0.3
 // @description  当前版本只有快捷下载功能，会有些 bug，后续将更新更多功能。
 // @author       Johnsen Young
 // @match        https://civitai.com/*
@@ -83,14 +83,15 @@
   // 下载视频文件的函数
   function downloadMP4(url) {
     // 检查是否已经下载过
-    if (isUrlDownloaded(url)) {
-      console.log("该视频已经下载过");
-      return "already_downloaded";
-    }
+    // if (isUrlDownloaded(url)) {
+    //   console.log("该视频已经下载过");
+    //   return "already_downloaded";
+    // }
 
     // 从URL中提取文件名
     const urlParts = url.split("/");
-    urlParts.splice(urlParts.length - 2, 1);
+    // 格式为：transcode=true,width=450
+    urlParts.splice(urlParts.length - 2, 1, "transcode=false,width=10000");
     let fileName = urlParts[urlParts.length - 1];
 
     // 如果文件名不是以.mp4结尾，添加时间戳和扩展名
@@ -99,7 +100,7 @@
     }
 
     const downloadUrl = urlParts.join("/");
-
+    console.log("downloadUrl", downloadUrl);
     GM_download({
       url: downloadUrl,
       name: fileName,
@@ -107,6 +108,12 @@
         console.log("下载完成");
         // 保存下载记录
         saveDownloadRecord(url, fileName);
+      },
+      onprogress: function (res) {
+        console.error("onprogress:", res);
+      },
+      ontimeout: function (res) {
+        console.error("ontimeout:", res);
       },
       onerror: function (e) {
         console.error("下载失败:", e.error);
@@ -165,6 +172,7 @@
     // 添加鼠标悬停事件
     link.addEventListener("mouseenter", function () {
       downloadBtn.style.display = "flex";
+      videoElement.play();
     });
 
     link.addEventListener("mouseleave", function () {
