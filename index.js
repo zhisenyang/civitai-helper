@@ -22,28 +22,49 @@
 
   // 获取下载记录
   function getDownloadRecords() {
-    return GM_getValue(DOWNLOAD_RECORDS_KEY, {});
+    const stored = GM_getValue(DOWNLOAD_RECORDS_KEY, "");
+    if (typeof stored === "string") {
+      return stored
+        .split("\n")
+        .map((name) => name.trim())
+        .filter((name) => name.length > 0);
+    }
+
+    // 兼容旧版本 JSON 结构，读取后转存为新格式
+    if (stored && typeof stored === "object") {
+      const legacyNames = Object.values(stored)
+        .map((item) => item && item.fileName)
+        .filter((name) => typeof name === "string" && name.length > 0);
+      setDownloadRecords(legacyNames);
+      return legacyNames;
+    }
+
+    return [];
+  }
+
+  // 以换行形式保存下载记录
+  function setDownloadRecords(records) {
+    const uniqueNames = Array.from(
+      new Set(
+        records
+          .map((name) => (typeof name === "string" ? name.trim() : ""))
+          .filter((name) => name.length > 0)
+      )
+    );
+    GM_setValue(DOWNLOAD_RECORDS_KEY, uniqueNames.join("\n"));
+    return uniqueNames;
   }
 
   // 保存下载记录
-  function saveDownloadRecord(url, fileName) {
+  function saveDownloadRecord(fileName) {
     const records = getDownloadRecords();
-    records[url] = {
-      fileName: fileName,
-      downloadTime: new Date().toISOString(),
-    };
-    GM_setValue(DOWNLOAD_RECORDS_KEY, records);
+    records.push(fileName);
+    setDownloadRecords(records);
   }
 
-  // 检查URL是否已下载
-  function isUrlDownloaded(url) {
-    const records = getDownloadRecords();
-    return !!records[url];
-  }
-
-  // 清除所有下载记录
-  function clearAllDownloadRecords() {
-    GM_setValue(DOWNLOAD_RECORDS_KEY, {});
+  // 判断文件名是否已下载
+  function isFileDownloaded(fileName) {
+    return getDownloadRecords().includes(fileName);
   }
 
   // 样式配置对象，便于统一管理和修改
@@ -80,43 +101,139 @@
     boxShadow: "0 2px 5px rgba(0,0,0,0.3)",
   };
 
-  // 下载视频文件的函数
-  function downloadMP4(url) {
-    // 检查是否已经下载过
-    // if (isUrlDownloaded(url)) {
-    //   console.log("该视频已经下载过");
-    //   return "already_downloaded";
-    // }
+  const DOWNLOAD_BUTTON_ICON =
+    '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>';
 
-    // 从URL中提取文件名
+  const DOWNLOAD_LOADING_ICON =
+    '<svg class="civitai-helper-spinner" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9" stroke-opacity="0.25"></circle><path d="M12 3a9 9 0 0 1 9 9" stroke-opacity="0.9"></path></svg>';
+
+  function ensureSpinnerStyle() {
+    if (document.getElementById("civitai-helper-spinner-style")) {
+      return;
+    }
+    const style = document.createElement("style");
+    style.id = "civitai-helper-spinner-style";
+    style.textContent =
+      "@keyframes civitai-helper-spin{0%{transform:rotate(0deg);}100%{transform:rotate(360deg);}}" +
+      ".civitai-helper-spinner{animation:civitai-helper-spin 1s linear infinite;transform-origin:12px 12px;opacity:0.9;}";
+    document.head.appendChild(style);
+  }
+
+  function setDownloadButtonLoading(button, isLoading) {
+    if (isLoading) {
+      ensureSpinnerStyle();
+      button.dataset.loading = "true";
+      button.style.pointerEvents = "none";
+      button.innerHTML = DOWNLOAD_LOADING_ICON;
+    } else {
+      button.dataset.loading = "false";
+      button.style.pointerEvents = "auto";
+      button.innerHTML = DOWNLOAD_BUTTON_ICON;
+    }
+  }
+
+  function appendDownloadedMark(link, options = {}) {
+    if (link.querySelector(".downloaded-mark")) {
+      return;
+    }
+    const mark = document.createElement("div");
+    mark.className = "downloaded-mark";
+    mark.style.position = "absolute";
+    mark.style.top = "10px";
+    mark.style.right = options.right || "10px";
+    mark.style.backgroundColor = "rgba(0, 128, 0, 0.7)";
+    mark.style.color = "white";
+    mark.style.padding = "2px 6px";
+    mark.style.borderRadius = "10px";
+    mark.style.fontSize = "12px";
+    mark.style.zIndex = "10";
+    mark.textContent = "已下载";
+    link.appendChild(mark);
+  }
+
+  function hashString(str) {
+    let hash = 0;
+    for (let i = 0; i < str.length; i += 1) {
+      hash = (hash << 5) - hash + str.charCodeAt(i);
+      hash |= 0; // 保持在32位整数范围内
+    }
+    return Math.abs(hash);
+  }
+
+  function buildDownloadInfo(url) {
     const urlParts = url.split("/");
     // 格式为：transcode=true,width=450
     urlParts.splice(urlParts.length - 2, 1, "transcode=false,width=10000");
-    let fileName = urlParts[urlParts.length - 1];
+    let fileName = urlParts[urlParts.length - 1] || "civitai-video.mp4";
+    fileName = fileName.split("?")[0] || "civitai-video.mp4";
 
     // 如果文件名不是以.mp4结尾，添加时间戳和扩展名
     if (!fileName.endsWith(".mp4")) {
-      fileName = "civitai-video-" + new Date().getTime() + ".mp4";
+      const baseName = fileName
+        .replace(/[^a-zA-Z0-9-_]/g, "_")
+        .replace(/_{2,}/g, "_")
+        .replace(/^_+|_+$/g, "");
+      const normalizedBase = baseName.length > 0 ? baseName : "civitai-video";
+      fileName = `${normalizedBase}-${hashString(url)}.mp4`;
     }
 
     const downloadUrl = urlParts.join("/");
+
+    return {
+      downloadUrl,
+      fileName,
+    };
+  }
+
+  // 下载视频文件的函数
+  function downloadMP4(url, callbacks = {}) {
+    const { downloadUrl, fileName } = buildDownloadInfo(url);
+    const { onSkip, onStart, onSuccess, onProgress, onTimeout, onError } =
+      callbacks;
+
+    // 检查是否已经下载过
+    if (isFileDownloaded(fileName)) {
+      console.log("该视频已经下载过");
+      if (typeof onSkip === "function") {
+        onSkip(fileName);
+      }
+      return "already_downloaded";
+    }
+
     console.log("downloadUrl", downloadUrl);
+    if (typeof onStart === "function") {
+      onStart(fileName);
+    }
     GM_download({
       url: downloadUrl,
       name: fileName,
       onload: function () {
-        console.log("下载完成");
+        console.log("下载完成", fileName);
         // 保存下载记录
-        saveDownloadRecord(url, fileName);
+        saveDownloadRecord(fileName);
+        if (typeof onSuccess === "function") {
+          onSuccess(fileName);
+        }
       },
-      onprogress: function (res) {
-        console.error("onprogress:", res);
-      },
+      // onprogress: function (res) {
+      //   console.log("onprogress:", res);
+      //   if (typeof onProgress === "function") {
+      //     onProgress(fileName, res);
+      //   }
+      // },
       ontimeout: function (res) {
-        console.error("ontimeout:", res);
+        console.log("ontimeout:", res);
+        if (typeof onTimeout === "function") {
+          onTimeout(fileName, res);
+        } else if (typeof onError === "function") {
+          onError(fileName, res);
+        }
       },
       onerror: function (e) {
-        console.error("下载失败:", e.error);
+        console.log("下载失败:", e.error);
+        if (typeof onError === "function") {
+          onError(fileName, e);
+        }
       },
     });
 
@@ -134,21 +251,11 @@
     const videoElement = link.querySelector("video");
     if (videoElement) {
       const mp4Source = videoElement.querySelector('source[type="video/mp4"]');
-      if (mp4Source && mp4Source.src && isUrlDownloaded(mp4Source.src)) {
-        // 添加已下载标记
-        const downloadedMark = document.createElement("div");
-        downloadedMark.className = "downloaded-mark";
-        downloadedMark.style.position = "absolute";
-        downloadedMark.style.top = "10px";
-        downloadedMark.style.right = "40px";
-        downloadedMark.style.backgroundColor = "rgba(0, 128, 0, 0.7)";
-        downloadedMark.style.color = "white";
-        downloadedMark.style.padding = "2px 6px";
-        downloadedMark.style.borderRadius = "10px";
-        downloadedMark.style.fontSize = "12px";
-        downloadedMark.style.zIndex = "10";
-        downloadedMark.textContent = "已下载";
-        link.appendChild(downloadedMark);
+      if (mp4Source && mp4Source.src) {
+        const { fileName } = buildDownloadInfo(mp4Source.src);
+        if (isFileDownloaded(fileName)) {
+          appendDownloadedMark(link, { right: "40px" });
+        }
       }
     }
 
@@ -161,8 +268,7 @@
     downloadBtn.style.display = "none";
 
     // 添加下载图标
-    downloadBtn.innerHTML =
-      '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>';
+    setDownloadButtonLoading(downloadBtn, false);
 
     // 确保link元素有相对定位，这样下载按钮可以正确定位
     if (getComputedStyle(link).position === "static") {
@@ -176,6 +282,9 @@
     });
 
     link.addEventListener("mouseleave", function () {
+      if (downloadBtn.dataset.loading === "true") {
+        return;
+      }
       downloadBtn.style.display = "none";
     });
 
@@ -195,6 +304,10 @@
       e.preventDefault();
       e.stopPropagation();
 
+      if (downloadBtn.dataset.loading === "true") {
+        return;
+      }
+
       // 获取视频元素中的MP4源文件URL
       const videoElement = link.querySelector("video");
       if (videoElement) {
@@ -203,44 +316,64 @@
           'source[type="video/mp4"]'
         );
         if (mp4Source && mp4Source.src) {
-          // 下载MP4文件
-          const result = downloadMP4(mp4Source.src);
-
-          // 视觉反馈
-          if (result === "already_downloaded") {
-            // 显示已下载的视觉反馈
-            const originalColor = this.style.backgroundColor;
-            this.style.backgroundColor = "rgba(255, 165, 0, 0.7)";
-            setTimeout(() => {
-              this.style.backgroundColor = originalColor;
-            }, 500);
-
-            // 显示提示
-            alert("该视频已经下载过");
-          } else if (result) {
-            // 显示下载成功的视觉反馈
-            const originalColor = this.style.backgroundColor;
-            this.style.backgroundColor = "rgba(0, 128, 0, 0.7)";
-            setTimeout(() => {
-              this.style.backgroundColor = originalColor;
-            }, 500);
-
-            // 添加已下载标记
-            if (!link.querySelector(".downloaded-mark")) {
-              const downloadedMark = document.createElement("div");
-              downloadedMark.className = "downloaded-mark";
-              downloadedMark.style.position = "absolute";
-              downloadedMark.style.top = "10px";
-              downloadedMark.style.right = "10px";
-              downloadedMark.style.backgroundColor = "rgba(0, 128, 0, 0.7)";
-              downloadedMark.style.color = "white";
-              downloadedMark.style.padding = "2px 6px";
-              downloadedMark.style.borderRadius = "10px";
-              downloadedMark.style.fontSize = "12px";
-              downloadedMark.style.zIndex = "10";
-              downloadedMark.textContent = "已下载";
-              link.appendChild(downloadedMark);
+          const baseColor = downloadBtn.style.backgroundColor;
+          const hideIfNotHover = () => {
+            if (!link.matches(":hover")) {
+              downloadBtn.style.display = "none";
             }
+          };
+          let flashTimer = null;
+          const flashColor = (color, duration = 500, after) => {
+            if (flashTimer) {
+              clearTimeout(flashTimer);
+            }
+            downloadBtn.style.backgroundColor = color;
+            flashTimer = setTimeout(() => {
+              downloadBtn.style.backgroundColor = baseColor;
+              flashTimer = null;
+              if (typeof after === "function") {
+                after();
+              }
+            }, duration);
+          };
+
+          // 下载MP4文件
+          const result = downloadMP4(mp4Source.src, {
+            onStart: () => {
+              setDownloadButtonLoading(downloadBtn, true);
+              downloadBtn.style.display = "flex";
+              downloadBtn.style.backgroundColor = "rgba(52, 152, 219, 0.8)";
+            },
+            onSuccess: () => {
+              setDownloadButtonLoading(downloadBtn, false);
+              appendDownloadedMark(link);
+              flashColor("rgba(0, 128, 0, 0.7)", 500, hideIfNotHover);
+            },
+            onSkip: () => {
+              setDownloadButtonLoading(downloadBtn, false);
+              flashColor("rgba(255, 165, 0, 0.7)", 500, hideIfNotHover);
+              alert("该视频已经下载过");
+            },
+            onError: () => {
+              setDownloadButtonLoading(downloadBtn, false);
+              flashColor("rgba(255, 99, 71, 0.8)", 800, hideIfNotHover);
+              alert("下载失败，请稍后重试");
+            },
+            onTimeout: () => {
+              setDownloadButtonLoading(downloadBtn, false);
+              flashColor("rgba(255, 99, 71, 0.8)", 800, hideIfNotHover);
+              alert("下载超时，请稍后重试");
+            },
+          });
+
+          if (result === "already_downloaded") {
+            return;
+          }
+
+          if (result !== true) {
+            setDownloadButtonLoading(downloadBtn, false);
+            downloadBtn.style.backgroundColor = baseColor;
+            hideIfNotHover();
           }
         }
       }
@@ -289,8 +422,9 @@
   // 创建下载记录管理界面
   function createDownloadRecordsUI() {
     // 检查是否已经添加了下载记录界面
-    if (document.querySelector(".download-records-ui")) {
-      return; // 如果已存在下载记录界面，则不重复创建
+    const existing = document.querySelector(".download-records-ui");
+    if (existing) {
+      return existing;
     }
 
     // 创建下载记录界面容器
@@ -309,10 +443,11 @@
     recordsUI.style.maxHeight = "80%";
     recordsUI.style.overflow = "auto";
     recordsUI.style.display = "none";
+    recordsUI.style.boxShadow = "0 4px 20px rgba(0,0,0,0.4)";
 
     // 添加标题
     const title = document.createElement("h2");
-    title.textContent = "下载记录管理";
+    title.textContent = "下载记录";
     title.style.marginTop = "0";
     title.style.marginBottom = "15px";
     recordsUI.appendChild(title);
@@ -330,117 +465,108 @@
     });
     recordsUI.appendChild(closeBtn);
 
-    // 添加记录列表容器
-    const recordsList = document.createElement("div");
-    recordsList.className = "records-list";
-    recordsList.style.marginBottom = "15px";
-    recordsUI.appendChild(recordsList);
+    const helperText = document.createElement("p");
+    helperText.textContent =
+      "每行一个文件名，空行会被忽略。编辑后点击保存即可更新记录。";
+    helperText.style.marginTop = "0";
+    helperText.style.color = "#ccc";
+    recordsUI.appendChild(helperText);
 
-    // 添加清除所有记录按钮
-    const clearAllBtn = document.createElement("button");
-    clearAllBtn.textContent = "清除所有记录";
-    clearAllBtn.style.padding = "8px 15px";
-    clearAllBtn.style.backgroundColor = "#ff4d4d";
-    clearAllBtn.style.border = "none";
-    clearAllBtn.style.borderRadius = "5px";
-    clearAllBtn.style.color = "white";
-    clearAllBtn.style.cursor = "pointer";
-    clearAllBtn.addEventListener("click", function () {
-      if (confirm("确定要清除所有下载记录吗？这将不会删除已下载的文件。")) {
-        clearAllDownloadRecords();
-        updateRecordsList();
-        // 刷新页面上的已下载标记
-        processCardLinks();
-      }
-    });
-    recordsUI.appendChild(clearAllBtn);
+    const textarea = document.createElement("textarea");
+    textarea.style.width = "100%";
+    textarea.style.minHeight = "240px";
+    textarea.style.backgroundColor = "rgba(255,255,255,0.1)";
+    textarea.style.color = "#fff";
+    textarea.style.border = "1px solid rgba(255,255,255,0.2)";
+    textarea.style.borderRadius = "6px";
+    textarea.style.padding = "12px";
+    textarea.style.resize = "vertical";
+    textarea.style.fontFamily = "monospace";
+    textarea.style.fontSize = "14px";
+    recordsUI.appendChild(textarea);
 
-    // 更新记录列表的函数
-    function updateRecordsList() {
-      recordsList.innerHTML = "";
-      const records = getDownloadRecords();
-      const urls = Object.keys(records);
+    const metaBar = document.createElement("div");
+    metaBar.style.display = "flex";
+    metaBar.style.justifyContent = "space-between";
+    metaBar.style.alignItems = "center";
+    metaBar.style.marginTop = "10px";
+    recordsUI.appendChild(metaBar);
 
-      if (urls.length === 0) {
-        const noRecords = document.createElement("p");
-        noRecords.textContent = "暂无下载记录";
-        recordsList.appendChild(noRecords);
-        return;
-      }
+    const countLabel = document.createElement("span");
+    countLabel.style.color = "#aaa";
+    metaBar.appendChild(countLabel);
 
-      // 创建记录表格
-      const table = document.createElement("table");
-      table.style.width = "100%";
-      table.style.borderCollapse = "collapse";
-      table.style.marginBottom = "15px";
+    const statusLabel = document.createElement("span");
+    statusLabel.style.color = "#4caf50";
+    statusLabel.style.opacity = "0";
+    statusLabel.style.transition = "opacity 0.3s ease";
+    metaBar.appendChild(statusLabel);
 
-      // 添加表头
-      const thead = document.createElement("thead");
-      const headerRow = document.createElement("tr");
-      ["文件名", "下载时间", "操作"].forEach((text) => {
-        const th = document.createElement("th");
-        th.textContent = text;
-        th.style.padding = "8px";
-        th.style.textAlign = "left";
-        th.style.borderBottom = "1px solid #444";
-        headerRow.appendChild(th);
-      });
-      thead.appendChild(headerRow);
-      table.appendChild(thead);
+    const actionBar = document.createElement("div");
+    actionBar.style.display = "flex";
+    actionBar.style.justifyContent = "flex-end";
+    actionBar.style.gap = "10px";
+    actionBar.style.marginTop = "15px";
+    recordsUI.appendChild(actionBar);
 
-      // 添加表格内容
-      const tbody = document.createElement("tbody");
-      urls.forEach((url) => {
-        const record = records[url];
-        const row = document.createElement("tr");
+    const saveBtn = document.createElement("button");
+    saveBtn.textContent = "保存";
+    saveBtn.style.padding = "8px 18px";
+    saveBtn.style.backgroundColor = "#4caf50";
+    saveBtn.style.border = "none";
+    saveBtn.style.borderRadius = "5px";
+    saveBtn.style.color = "white";
+    saveBtn.style.cursor = "pointer";
+    saveBtn.style.fontSize = "14px";
+    actionBar.appendChild(saveBtn);
 
-        // 文件名列
-        const fileNameCell = document.createElement("td");
-        fileNameCell.textContent = record.fileName;
-        fileNameCell.style.padding = "8px";
-        fileNameCell.style.borderBottom = "1px solid #444";
-        row.appendChild(fileNameCell);
+    const refreshBtn = document.createElement("button");
+    refreshBtn.textContent = "恢复当前记录";
+    refreshBtn.style.padding = "8px 18px";
+    refreshBtn.style.backgroundColor = "rgba(255, 255, 255, 0.1)";
+    refreshBtn.style.border = "1px solid rgba(255,255,255,0.2)";
+    refreshBtn.style.borderRadius = "5px";
+    refreshBtn.style.color = "white";
+    refreshBtn.style.cursor = "pointer";
+    refreshBtn.style.fontSize = "14px";
+    actionBar.appendChild(refreshBtn);
 
-        // 下载时间列
-        const timeCell = document.createElement("td");
-        const downloadDate = new Date(record.downloadTime);
-        timeCell.textContent = downloadDate.toLocaleString();
-        timeCell.style.padding = "8px";
-        timeCell.style.borderBottom = "1px solid #444";
-        row.appendChild(timeCell);
-
-        // 操作列
-        const actionCell = document.createElement("td");
-        actionCell.style.padding = "8px";
-        actionCell.style.borderBottom = "1px solid #444";
-
-        const deleteBtn = document.createElement("button");
-        deleteBtn.textContent = "删除记录";
-        deleteBtn.style.padding = "5px 10px";
-        deleteBtn.style.backgroundColor = "#ff4d4d";
-        deleteBtn.style.border = "none";
-        deleteBtn.style.borderRadius = "3px";
-        deleteBtn.style.color = "white";
-        deleteBtn.style.cursor = "pointer";
-        deleteBtn.addEventListener("click", function () {
-          const records = getDownloadRecords();
-          delete records[url];
-          GM_setValue(DOWNLOAD_RECORDS_KEY, records);
-          updateRecordsList();
-          // 刷新页面上的已下载标记
-          processCardLinks();
-        });
-        actionCell.appendChild(deleteBtn);
-        row.appendChild(actionCell);
-
-        tbody.appendChild(row);
-      });
-      table.appendChild(tbody);
-      recordsList.appendChild(table);
+    function showStatus(text) {
+      statusLabel.textContent = text;
+      statusLabel.style.opacity = "1";
+      setTimeout(() => {
+        statusLabel.style.opacity = "0";
+      }, 1600);
     }
 
-    // 初始更新记录列表
-    updateRecordsList();
+    function refreshRecordsEditor() {
+      const recordList = getDownloadRecords();
+      textarea.value = recordList.join("\n");
+      countLabel.textContent = `当前记录数：${recordList.length}`;
+      statusLabel.style.opacity = "0";
+    }
+
+    saveBtn.addEventListener("click", function () {
+      const sanitized = textarea.value
+        .split("\n")
+        .map((line) => line.trim())
+        .filter((line) => line.length > 0);
+      const unique = setDownloadRecords(sanitized);
+      textarea.value = unique.join("\n");
+      countLabel.textContent = `当前记录数：${unique.length}`;
+      showStatus("保存成功");
+      processCardLinks();
+    });
+
+    refreshBtn.addEventListener("click", function () {
+      refreshRecordsEditor();
+      showStatus("已恢复");
+    });
+
+    refreshRecordsEditor();
+
+    // 暴露刷新方法，方便外部调用
+    recordsUI.refreshRecordsEditor = refreshRecordsEditor;
 
     // 将下载记录界面添加到页面
     document.body.appendChild(recordsUI);
@@ -513,6 +639,9 @@
 
       // 显示下载记录界面
       const recordsUI = createDownloadRecordsUI();
+      if (typeof recordsUI.refreshRecordsEditor === "function") {
+        recordsUI.refreshRecordsEditor();
+      }
       recordsUI.style.display = "block";
     });
 
@@ -545,30 +674,37 @@
 
   // 下载所有视频
   function downloadAllVideos() {
-    // 获取所有视频元素
     const cardLinks = document.querySelectorAll(".EdgeVideo_iosScroll___eG2B ");
-    let downloadCount = 0;
-    let totalVideos = 0;
+    const downloadTasks = [];
 
-    // 计算可下载的视频总数
     cardLinks.forEach((link) => {
       const videoElement = link.querySelector("video");
-      if (videoElement) {
-        const mp4Source = videoElement.querySelector(
-          'source[type="video/mp4"]'
-        );
-        if (mp4Source && mp4Source.src) {
-          totalVideos++;
-        }
+      if (!videoElement) {
+        return;
       }
+      const mp4Source = videoElement.querySelector('source[type="video/mp4"]');
+      if (!mp4Source || !mp4Source.src) {
+        return;
+      }
+      const { fileName } = buildDownloadInfo(mp4Source.src);
+      downloadTasks.push({
+        link,
+        url: mp4Source.src,
+        fileName,
+      });
     });
 
-    if (totalVideos === 0) {
+    if (downloadTasks.length === 0) {
       alert("当前页面没有找到可下载的视频");
       return;
     }
 
-    // 创建下载进度提示
+    const totalVideos = downloadTasks.length;
+    let completedCount = 0;
+    let scheduledDownloads = 0;
+    let startedCount = 0;
+    let hasError = false;
+
     const progressElement = document.createElement("div");
     progressElement.style.position = "fixed";
     progressElement.style.bottom = "80px";
@@ -578,74 +714,88 @@
     progressElement.style.padding = "10px";
     progressElement.style.borderRadius = "5px";
     progressElement.style.zIndex = "1000";
-    progressElement.textContent = `准备下载 0/${totalVideos} 个视频...`;
+    progressElement.textContent = `准备处理 0/${totalVideos} 个视频...`;
     document.body.appendChild(progressElement);
 
-    // 视觉反馈 - 开始下载
     const globalButton = document.querySelector(".global-download-button");
     if (globalButton) {
       globalButton.style.backgroundColor = "rgba(255, 165, 0, 0.7)";
     }
 
-    // 逐个下载视频
-    cardLinks.forEach((link) => {
-      const videoElement = link.querySelector("video");
-      if (videoElement) {
-        const mp4Source = videoElement.querySelector(
-          'source[type="video/mp4"]'
-        );
-        if (mp4Source && mp4Source.src) {
-          // 检查是否已下载
-          if (isUrlDownloaded(mp4Source.src)) {
-            downloadCount++;
-            progressElement.textContent = `跳过已下载视频 ${downloadCount}/${totalVideos}...`;
+    function updateProgress(prefix) {
+      progressElement.textContent = `${prefix} ${completedCount}/${totalVideos} 个视频...`;
+    }
 
-            // 所有视频处理完成
-            if (downloadCount === totalVideos) {
-              progressElement.textContent = `已完成处理全部 ${totalVideos} 个视频！`;
-
-              // 视觉反馈 - 完成
-              if (globalButton) {
-                globalButton.style.backgroundColor = "rgba(0, 128, 0, 0.7)";
-                setTimeout(() => {
-                  globalButton.style.backgroundColor = "rgba(0, 0, 0, 0.7)";
-                  // 3秒后移除进度提示
-                  setTimeout(() => {
-                    document.body.removeChild(progressElement);
-                  }, 3000);
-                }, 1000);
-              }
-            }
-          } else {
-            // 延迟下载，避免浏览器限制
-            setTimeout(() => {
-              const success = downloadMP4(mp4Source.src);
-              if (success === true) {
-                // 确保不是 "already_downloaded"
-                downloadCount++;
-                progressElement.textContent = `正在下载 ${downloadCount}/${totalVideos} 个视频...`;
-
-                // 所有视频下载完成
-                if (downloadCount === totalVideos) {
-                  progressElement.textContent = `已完成全部 ${totalVideos} 个视频下载！`;
-
-                  // 视觉反馈 - 下载完成
-                  if (globalButton) {
-                    globalButton.style.backgroundColor = "rgba(0, 128, 0, 0.7)";
-                    setTimeout(() => {
-                      globalButton.style.backgroundColor = "rgba(0, 0, 0, 0.7)";
-                      // 3秒后移除进度提示
-                      setTimeout(() => {
-                        document.body.removeChild(progressElement);
-                      }, 3000);
-                    }, 1000);
-                  }
-                }
-              }
-            }, downloadCount * 300); // 每个下载间隔300ms
-          }
+    function finalize() {
+      if (hasError) {
+        progressElement.textContent = `全部 ${totalVideos} 个视频已处理，但存在失败，请稍后重试。`;
+        if (globalButton) {
+          globalButton.style.backgroundColor = "rgba(255, 99, 71, 0.7)";
+        }
+      } else {
+        progressElement.textContent = `已完成全部 ${totalVideos} 个视频下载！`;
+        if (globalButton) {
+          globalButton.style.backgroundColor = "rgba(0, 128, 0, 0.7)";
         }
       }
+
+      setTimeout(() => {
+        if (globalButton) {
+          globalButton.style.backgroundColor = "rgba(0, 0, 0, 0.7)";
+        }
+        setTimeout(() => {
+          if (progressElement.parentNode) {
+            progressElement.parentNode.removeChild(progressElement);
+          }
+        }, 3000);
+      }, 1000);
+
+      updateGlobalButtonCount();
+      processCardLinks();
+    }
+
+    function handleCompletion(prefix) {
+      completedCount += 1;
+      updateProgress(prefix);
+      if (completedCount === totalVideos) {
+        finalize();
+      }
+    }
+
+    const delayPerDownload = 400;
+
+    downloadTasks.forEach(({ link, url, fileName }) => {
+      if (isFileDownloaded(fileName)) {
+        handleCompletion("跳过已下载视频");
+        return;
+      }
+
+      const delay = scheduledDownloads * delayPerDownload;
+      scheduledDownloads += 1;
+
+      setTimeout(() => {
+        downloadMP4(url, {
+          onStart: () => {
+            startedCount += 1;
+            progressElement.textContent = `正在下载 ${startedCount}/${totalVideos} 个视频...`;
+          },
+          onSuccess: () => {
+            appendDownloadedMark(link);
+            handleCompletion("下载完成");
+          },
+          onSkip: () => {
+            handleCompletion("跳过已下载视频");
+          },
+          onError: () => {
+            hasError = true;
+            handleCompletion("下载失败");
+          },
+          onTimeout: () => {
+            hasError = true;
+            handleCompletion("下载超时");
+          },
+        });
+      }, delay);
     });
   }
 
