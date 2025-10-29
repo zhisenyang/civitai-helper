@@ -36,10 +36,16 @@ async function collectFiles(currentDir, rootDir, collection, outputFile) {
       continue;
     }
 
-    if (entry.isFile()) {
-      collection.push(path.relative(rootDir, absolutePath) || entry.name);
+    if (!entry.isFile()) {
       continue;
     }
+
+    const { name: baseName, ext } = path.parse(entry.name);
+    if (!ext || !/^\d+$/.test(baseName)) {
+      continue;
+    }
+
+    collection.push(entry.name);
   }
 }
 
