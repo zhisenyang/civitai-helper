@@ -163,7 +163,7 @@
   function buildDownloadInfo(url) {
     const urlParts = url.split("/");
     // 格式为：transcode=true,width=450
-    urlParts.splice(urlParts.length - 2, 1, "transcode=false,width=10000");
+    urlParts.splice(urlParts.length - 2, 1, "transcode=true,original=true");
     let fileName = urlParts[urlParts.length - 1] || "civitai-video.mp4";
     fileName = fileName.split("?")[0] || "civitai-video.mp4";
 
